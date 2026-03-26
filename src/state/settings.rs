@@ -38,13 +38,28 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    /// Config file path - next to exe for portable mode
+    /// Config file path - always next to the exe (portable mode)
     fn config_path() -> PathBuf {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| PathBuf::from("."));
-        exe_dir.join("simple-pdf-reader-config.json")
+        // Always resolve to exe directory, never current working directory
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                return dir.join("simple-pdf-reader-config.json");
+            }
+        }
+        // Fallback: user home directory
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(home) = std::env::var("USERPROFILE") {
+                return PathBuf::from(home).join("simple-pdf-reader-config.json");
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Ok(home) = std::env::var("HOME") {
+                return PathBuf::from(home).join("simple-pdf-reader-config.json");
+            }
+        }
+        PathBuf::from("simple-pdf-reader-config.json")
     }
 
     pub fn load() -> Self {

@@ -40,6 +40,10 @@ pub struct ViewportState {
     pub properties_open: bool,
     pub goto_error: String,
     pub last_scroll_direction: f32,
+    pub about_open: bool,
+    pub extract_dialog_open: bool,
+    pub extract_input: String,
+    pub extract_status: String,
 }
 
 // No debounce - SumatraPDF/PDF.js approach:
@@ -69,6 +73,10 @@ impl Default for ViewportState {
             goto_input: String::new(),
             properties_open: false,
             goto_error: String::new(),
+            about_open: false,
+            extract_dialog_open: false,
+            extract_input: String::new(),
+            extract_status: String::new(),
             last_scroll_direction: 0.0,
         }
     }
@@ -217,7 +225,7 @@ impl Default for InertialScroll {
 impl InertialScroll {
     /// Apply a scroll impulse
     pub fn impulse(&mut self, delta: egui::Vec2) {
-        self.velocity = delta * 3.0; // amplify wheel input
+        self.velocity = delta * 1.2; // slight amplification
         self.active = true;
     }
 

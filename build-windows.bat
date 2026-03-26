@@ -18,11 +18,9 @@ if %ERRORLEVEL% NEQ 0 (
     winget install LLVM.LLVM -s winget --accept-package-agreements --accept-source-agreements
     if %ERRORLEVEL% NEQ 0 (
         echo [ERROR] Failed to install LLVM. Install manually: https://releases.llvm.org
-        echo         Or: choco install llvm
         pause
         exit /b 1
     )
-    :: Refresh PATH
     set "PATH=%PATH%;C:\Program Files\LLVM\bin"
 )
 
@@ -38,20 +36,24 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-:: Copy to dist
-if not exist dist mkdir dist
-copy /Y target\release\SimplePDFReader.exe dist\PDFReader.exe
+:: Create desktop shortcut
+echo [SHORTCUT] Creating desktop shortcut...
+set "EXE_PATH=%CD%\target\release\SimplePDFReader.exe"
+set "WORK_DIR=%CD%\target\release"
+
+powershell -Command "$ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\Simple PDF Reader.lnk'); $sc.TargetPath = '%EXE_PATH%'; $sc.WorkingDirectory = '%WORK_DIR%'; $sc.IconLocation = '%EXE_PATH%,0'; $sc.Description = 'Simple PDF Reader'; $sc.Save()"
 
 echo.
 echo ============================================
 echo   Build complete!
-echo   Output: dist\PDFReader.exe
+echo   Exe: target\release\SimplePDFReader.exe
+echo   Shortcut: Desktop\Simple PDF Reader
 echo ============================================
 echo.
 echo   Usage:
-echo     PDFReader.exe                    - Open viewer
-echo     PDFReader.exe file.pdf           - Open a PDF
-echo     PDFReader.exe --register         - Set as default PDF viewer
-echo     PDFReader.exe --unregister       - Remove file association
+echo     SimplePDFReader.exe                - Open viewer
+echo     SimplePDFReader.exe file.pdf       - Open a PDF
+echo     SimplePDFReader.exe --register     - Set as default PDF viewer
+echo     SimplePDFReader.exe --unregister   - Remove file association
 echo.
 pause

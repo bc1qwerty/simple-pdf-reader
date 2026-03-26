@@ -60,6 +60,63 @@ pub struct PdfReaderApp {
 }
 
 impl PdfReaderApp {
+    fn load_cjk_font(ctx: &egui::Context) {
+        // Multi-script font fallback chain
+        // Each entry: (name, [candidate paths]) — loaded in order as fallback
+        let font_candidates: &[(&str, &[&str])] = &[
+            ("cjk", &[
+                // Windows CJK
+                "C:\\Windows\\Fonts\\malgun.ttf",    // Korean 맑은 고딕
+                "C:\\Windows\\Fonts\\msyh.ttc",      // Chinese 微软雅黑
+                "C:\\Windows\\Fonts\\meiryo.ttc",    // Japanese メイリオ
+                // Linux CJK
+                "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            ]),
+            ("arabic", &[
+                "C:\\Windows\\Fonts\\segoeui.ttf",   // Segoe UI (Arabic, Hebrew, etc.)
+                "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+            ]),
+            ("thai", &[
+                "C:\\Windows\\Fonts\\leelawui.ttf",  // Leelawadee UI (Thai, Lao)
+                "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+            ]),
+            ("devanagari", &[
+                "C:\\Windows\\Fonts\\nirmala.ttf",   // Nirmala UI (Hindi, Bengali, etc.)
+                "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+            ]),
+        ];
+
+        let mut fonts = egui::FontDefinitions::default();
+        let mut any_loaded = false;
+
+        for (name, paths) in font_candidates {
+            for path in *paths {
+                if let Ok(data) = std::fs::read(path) {
+                    fonts.font_data.insert(
+                        name.to_string(),
+                        egui::FontData::from_owned(data).into(),
+                    );
+                    fonts.families
+                        .entry(egui::FontFamily::Proportional)
+                        .or_default()
+                        .push(name.to_string());
+                    fonts.families
+                        .entry(egui::FontFamily::Monospace)
+                        .or_default()
+                        .push(name.to_string());
+                    any_loaded = true;
+                    break; // use first found for this script
+                }
+            }
+        }
+
+        if any_loaded {
+            ctx.set_fonts(fonts);
+        }
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = AppSettings::load();
         if settings.dark_mode {
@@ -67,6 +124,9 @@ impl PdfReaderApp {
         } else {
             cc.egui_ctx.set_visuals(egui::Visuals::light());
         }
+
+        // Load CJK font for Korean/Japanese/Chinese filename support
+        Self::load_cjk_font(&cc.egui_ctx);
 
         let clipboard = arboard::Clipboard::new().ok();
 
@@ -549,6 +609,8 @@ impl PdfReaderApp {
                     self.viewport.goto_dialog_open = false;
                 } else if self.viewport.properties_open {
                     self.viewport.properties_open = false;
+                } else if self.viewport.extract_dialog_open {
+                    self.viewport.extract_dialog_open = false;
                 } else {
                     self.search.visible = false;
                     self.selection = TextSelection::default();
@@ -597,6 +659,7 @@ impl PdfReaderApp {
             if ctrl && i.key_pressed(egui::Key::M) { self.viewport.toggle_view_mode(); }
             if ctrl && i.key_pressed(egui::Key::H) { self.viewport.toggle_cursor_mode(); }
             if ctrl && i.key_pressed(egui::Key::P) { self.print_document(); }
+            if ctrl && i.key_pressed(egui::Key::E) { self.viewport.extract_dialog_open = true; }
 
             // Ctrl+C: copy selected text
             if ctrl && i.key_pressed(egui::Key::C) && !self.selection.text.is_empty() {
@@ -970,6 +1033,190 @@ impl PdfReaderApp {
     }
 
     /// Draw Document Properties dialog (Feature 7)
+    /// Parse page input string like "1, 3, 5-8, 2" into page indices (0-based)
+    fn parse_page_input(input: &str, page_count: usize) -> Result<Vec<usize>, String> {
+        let mut pages = Vec::new();
+        for part in input.split(',') {
+            let part = part.trim();
+            if part.is_empty() { continue; }
+            if let Some((start, end)) = part.split_once('-') {
+                let s: usize = start.trim().parse().map_err(|_| format!("Invalid: '{}'", start.trim()))?;
+                let e: usize = end.trim().parse().map_err(|_| format!("Invalid: '{}'", end.trim()))?;
+                if s < 1 || e < 1 || s > page_count || e > page_count {
+                    return Err(format!("Page range {}-{} out of bounds (1-{})", s, e, page_count));
+                }
+                if s <= e {
+                    for p in s..=e { pages.push(p - 1); }
+                } else {
+                    for p in (e..=s).rev() { pages.push(p - 1); }
+                }
+            } else {
+                let p: usize = part.parse().map_err(|_| format!("Invalid: '{}'", part))?;
+                if p < 1 || p > page_count {
+                    return Err(format!("Page {} out of bounds (1-{})", p, page_count));
+                }
+                pages.push(p - 1);
+            }
+        }
+        if pages.is_empty() { return Err("No pages specified".into()); }
+        Ok(pages)
+    }
+
+    /// Extract specified pages into a new PDF file
+    fn extract_pages(&self, pages: &[usize]) -> Result<PathBuf, String> {
+        let doc_state = self.document.as_ref().ok_or("No document open")?;
+        let src_path = &doc_state.path;
+
+        // Open source as PdfDocument (mupdf pdf module)
+        let src = mupdf::pdf::PdfDocument::open(src_path.to_str().unwrap_or_default())
+            .map_err(|e| format!("Failed to open source: {e}"))?;
+        let mut dst = mupdf::pdf::PdfDocument::new();
+
+        // Graft each requested page
+        for &page_no in pages {
+            let page_obj = src.find_page(page_no as i32)
+                .map_err(|e| format!("Failed to find page {}: {e}", page_no + 1))?;
+            let grafted = dst.graft_object(&page_obj)
+                .map_err(|e| format!("Failed to graft page {}: {e}", page_no + 1))?;
+            let count = dst.page_count()
+                .map_err(|e| format!("Failed to count pages: {e}"))? as i32;
+            dst.insert_page(count, &grafted)
+                .map_err(|e| format!("Failed to insert page {}: {e}", page_no + 1))?;
+        }
+
+        // Save next to the original file
+        let stem = src_path.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+        let parent = src_path.parent().unwrap_or(std::path::Path::new("."));
+        let out_path = parent.join(format!("{}_extracted.pdf", stem));
+        dst.save(out_path.to_str().unwrap_or("extracted.pdf"))
+            .map_err(|e| format!("Failed to save: {e}"))?;
+
+        Ok(out_path)
+    }
+
+    fn draw_about_dialog(&mut self, ctx: &egui::Context) {
+        let mut open = self.viewport.about_open;
+        egui::Window::new("About Simple PDF Reader")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(350.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(8.0);
+                    ui.heading("Simple PDF Reader");
+                    ui.add_space(4.0);
+                    ui.label("Version 0.1.0");
+                    ui.add_space(12.0);
+                    ui.label("Fast, lightweight, portable PDF viewer.");
+                    ui.label("Built with Rust + egui + MuPDF.");
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    egui::Grid::new("about_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.label("Engine:");
+                            ui.label("MuPDF 0.6");
+                            ui.end_row();
+                            ui.label("GUI:");
+                            ui.label("egui 0.33 (glow)");
+                            ui.end_row();
+                            ui.label("License:");
+                            ui.label("AGPL-3.0");
+                            ui.end_row();
+                            ui.label("Platform:");
+                            ui.label("Windows 10/11");
+                            ui.end_row();
+                        });
+
+                    ui.add_space(12.0);
+
+                    if ui.hyperlink_to("Website: apps.txid.uk", "https://apps.txid.uk/ko/").clicked() {
+                        self.open_url("https://apps.txid.uk/ko/");
+                    }
+                    if ui.hyperlink_to("Source: GitHub", "https://github.com/bc1qwerty/simple-pdf-reader").clicked() {
+                        self.open_url("https://github.com/bc1qwerty/simple-pdf-reader");
+                    }
+
+                    ui.add_space(8.0);
+                });
+            });
+        self.viewport.about_open = open;
+    }
+
+    fn draw_extract_dialog(&mut self, ctx: &egui::Context) {
+        let page_count = self.document.as_ref().map(|d| d.page_count).unwrap_or(0);
+        let mut open = self.viewport.extract_dialog_open;
+        egui::Window::new("Extract Pages")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(400.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Total pages: {}", page_count));
+                ui.add_space(4.0);
+                ui.label("Enter pages to extract:");
+                ui.label("  Examples: 1, 3, 5-8  or  8-5, 2, 2, 1");
+                ui.label("  Pages are extracted in the order you type.");
+                ui.label("  Duplicates allowed. Reverse ranges (8-5) work.");
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Pages:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.viewport.extract_input)
+                            .desired_width(250.0)
+                            .hint_text("1, 3, 5-8"),
+                    );
+                });
+
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Extract").clicked() {
+                        match Self::parse_page_input(&self.viewport.extract_input, page_count) {
+                            Ok(pages) => {
+                                match self.extract_pages(&pages) {
+                                    Ok(path) => {
+                                        self.viewport.extract_status = format!(
+                                            "Saved: {} ({} pages)", path.display(), pages.len()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        self.viewport.extract_status = format!("Error: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.viewport.extract_status = format!("Error: {}", e);
+                            }
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.viewport.extract_dialog_open = false;
+                        self.viewport.extract_status.clear();
+                    }
+                });
+
+                if !self.viewport.extract_status.is_empty() {
+                    ui.add_space(8.0);
+                    let is_error = self.viewport.extract_status.starts_with("Error");
+                    let color = if is_error {
+                        egui::Color32::from_rgb(220, 50, 50)
+                    } else {
+                        egui::Color32::from_rgb(50, 180, 50)
+                    };
+                    ui.colored_label(color, &self.viewport.extract_status);
+                }
+            });
+        self.viewport.extract_dialog_open = open;
+    }
+
     fn draw_properties_dialog(&mut self, ctx: &egui::Context) {
         let mut open = self.viewport.properties_open;
         egui::Window::new("Document Properties")
@@ -1262,6 +1509,16 @@ impl eframe::App for PdfReaderApp {
             self.draw_properties_dialog(ctx);
         }
 
+        // === Extract pages dialog ===
+        if self.viewport.extract_dialog_open {
+            self.draw_extract_dialog(ctx);
+        }
+
+        // === About dialog ===
+        if self.viewport.about_open {
+            self.draw_about_dialog(ctx);
+        }
+
         // === Fullscreen: show exit hint bar at top ===
         if is_fullscreen {
             egui::TopBottomPanel::top("fullscreen_hint").show(ctx, |ui| {
@@ -1299,6 +1556,10 @@ impl eframe::App for PdfReaderApp {
                 if action.toggle_cursor_mode { self.viewport.toggle_cursor_mode(); }
                 if action.print { self.print_document(); }
                 if action.close_document { self.close_document(ctx); }
+                if action.extract_pages { self.viewport.extract_dialog_open = true; }
+                if action.open_website { self.open_url("https://apps.txid.uk/ko/"); }
+                if action.open_manual { self.open_url("https://apps.txid.uk/ko/simple-pdf-reader/"); }
+                if action.show_about { self.viewport.about_open = true; }
                 if action.register_default { crate::register_as_default(); }
                 if action.unregister_default { crate::unregister_as_default(); }
                 if action.rotate_cw {
@@ -1603,18 +1864,28 @@ impl eframe::App for PdfReaderApp {
                         if !page_fits_screen {
                             let content_h = page_h + 8.0;
                             let view_h = output.inner_rect.height();
-                            let at_bottom = self.scroll_offset.y >= (content_h - view_h - 2.0).max(0.0);
-                            let at_top = self.scroll_offset.y <= 1.0;
+                            let max_scroll = (content_h - view_h).max(0.0);
+                            let at_bottom = self.scroll_offset.y >= max_scroll - 5.0;
+                            let at_top = self.scroll_offset.y <= 2.0;
                             let scroll_delta = ctx.input(|i| i.raw_scroll_delta.y);
 
-                            if at_bottom && scroll_delta < -10.0 {
+                            if at_bottom && scroll_delta < -5.0 && self.viewport.current_page + 1 < page_count {
                                 self.viewport.next_page(page_count);
-                                self.scroll_to_page = Some(self.viewport.current_page);
+                                // Start at top of next page
                                 self.scroll_offset.y = 0.0;
-                            } else if at_top && scroll_delta > 10.0 {
+                                self.scroll_offset.x = 0.0;
+                                // Don't use scroll_to_page — set offset directly
+                            } else if at_top && scroll_delta > 5.0 && self.viewport.current_page > 0 {
                                 self.viewport.prev_page();
                                 // Start at bottom of previous page
-                                self.scroll_offset.y = f32::MAX;
+                                // Calculate the new page height to set scroll to bottom
+                                let prev_page = self.viewport.current_page;
+                                if prev_page < page_sizes.len() {
+                                    let (_, prev_ph) = page_sizes[prev_page];
+                                    let prev_content_h = prev_ph * zoom + 8.0;
+                                    let prev_max = (prev_content_h - view_h).max(0.0);
+                                    self.scroll_offset.y = prev_max;
+                                }
                             }
                         }
                     }
@@ -1743,16 +2014,19 @@ impl eframe::App for PdfReaderApp {
             }
         }
 
-        // File drop
-        ctx.input(|i| {
+        // File drop - extract path outside ctx.input() to avoid deadlock
+        let dropped_path: Option<PathBuf> = ctx.input(|i| {
             if !i.raw.dropped_files.is_empty() {
-                if let Some(path) = i.raw.dropped_files[0].path.clone() {
-                    if path.extension().map(|e| e == "pdf").unwrap_or(false) {
-                        self.try_open_document(&path, ctx);
-                    }
-                }
+                i.raw.dropped_files[0].path.clone()
+            } else {
+                None
             }
         });
+        if let Some(path) = dropped_path {
+            if path.extension().map(|e| e == "pdf").unwrap_or(false) {
+                self.try_open_document(&path, ctx);
+            }
+        }
 
         // Repaint if renders pending or inertial scroll active
         if self.pipeline.as_ref().map(|p| p.has_pending()).unwrap_or(false)

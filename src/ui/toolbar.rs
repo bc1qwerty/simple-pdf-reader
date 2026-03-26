@@ -23,6 +23,10 @@ pub struct ToolbarAction {
     pub close_document: bool,
     pub register_default: bool,
     pub unregister_default: bool,
+    pub extract_pages: bool,
+    pub open_website: bool,
+    pub open_manual: bool,
+    pub show_about: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,6 +53,8 @@ pub fn draw_toolbar(
             if ui.button("  Open                     Ctrl+O").clicked() { action.open_file = true; ui.close(); }
             ui.separator();
             if ui.button("  Close                    Ctrl+W").clicked() { action.close_document = true; ui.close(); }
+            ui.separator();
+            if ui.button("  Extract Pages            Ctrl+E").clicked() { action.extract_pages = true; ui.close(); }
             ui.separator();
             if ui.button("  Print                    Ctrl+P").clicked() { action.print = true; ui.close(); }
             ui.separator();
@@ -109,6 +115,13 @@ pub fn draw_toolbar(
             if ui.button(bm).clicked() { action.toggle_bookmark = true; ui.close(); }
             ui.separator();
             if ui.button("  Sidebar                  Ctrl+L").clicked() { action.toggle_sidebar = true; ui.close(); }
+        });
+
+        ui.menu_button("Help", |ui| {
+            if ui.button("  Website").clicked() { action.open_website = true; ui.close(); }
+            if ui.button("  Online Manual").clicked() { action.open_manual = true; ui.close(); }
+            ui.separator();
+            if ui.button("  About Simple PDF Reader").clicked() { action.show_about = true; ui.close(); }
         });
     });
 

@@ -42,7 +42,7 @@ fn main() -> eframe::Result<()> {
     let icon = load_icon();
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([w, h])
+        .with_inner_size([600.0, h.max(700.0)])
         .with_min_inner_size([600.0, 400.0])
         .with_drag_and_drop(true);
 
@@ -74,32 +74,42 @@ fn load_icon() -> Option<egui::IconData> {
     })
 }
 
-/// Register as default PDF viewer (Windows: HKCU registry, Linux: xdg-mime)
+/// Register as default PDF viewer
+/// Windows 10/11: Register ProgID + open "Default Apps" settings for user to select
+/// Linux: Create .desktop file + xdg-mime
 fn register_file_association() {
     let exe_path = std::env::current_exe().unwrap_or_default();
     let exe_str = exe_path.to_string_lossy();
 
     #[cfg(target_os = "windows")]
     {
-        // Write to HKCU (no admin needed)
+        // Step 1: Register ProgID so the app appears in "Open With" / "Default Apps" list
         let commands = [
-            format!(r#"reg add "HKCU\Software\Classes\.pdf" /ve /d "SimplePDFReader.Document" /f"#),
+            // Register application capabilities
             format!(r#"reg add "HKCU\Software\Classes\SimplePDFReader.Document" /ve /d "PDF Document" /f"#),
             format!(r#"reg add "HKCU\Software\Classes\SimplePDFReader.Document\shell\open\command" /ve /d "\"{exe_str}\" \"%1\"" /f"#),
-            format!(r#"reg add "HKCU\Software\Classes\SimplePDFReader.Document\DefaultIcon" /ve /d "{exe_str},0" /f"#),
+            format!(r#"reg add "HKCU\Software\Classes\SimplePDFReader.Document\DefaultIcon" /ve /d "\"{exe_str}\",0" /f"#),
+            // Register in RegisteredApplications
+            format!(r#"reg add "HKCU\Software\SimplePDFReader\Capabilities" /v "ApplicationDescription" /d "Simple PDF Reader" /f"#),
+            format!(r#"reg add "HKCU\Software\SimplePDFReader\Capabilities" /v "ApplicationName" /d "Simple PDF Reader" /f"#),
+            format!(r#"reg add "HKCU\Software\SimplePDFReader\Capabilities\FileAssociations" /v ".pdf" /d "SimplePDFReader.Document" /f"#),
+            format!(r#"reg add "HKCU\Software\RegisteredApplications" /v "SimplePDFReader" /d "Software\\SimplePDFReader\\Capabilities" /f"#),
         ];
         for cmd in &commands {
             let _ = std::process::Command::new("cmd")
                 .args(["/C", cmd])
                 .output();
         }
-        println!("Registered as default PDF viewer.");
-        println!("Path: {}", exe_str);
+
+        // Step 2: Open Windows Settings → Default Apps → .pdf
+        // This lets the user select Simple PDF Reader with one click
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "ms-settings:defaultapps"])
+            .spawn();
     }
 
     #[cfg(target_os = "linux")]
     {
-        // Create .desktop file
         let desktop_dir = std::env::var("HOME")
             .map(|h| std::path::PathBuf::from(h).join(".local/share/applications"))
             .unwrap_or_else(|_| std::path::PathBuf::from("/usr/share/applications"));
@@ -113,8 +123,6 @@ fn register_file_association() {
             let _ = std::process::Command::new("xdg-mime")
                 .args(["default", "simple-pdf-reader.desktop", "application/pdf"])
                 .output();
-            println!("Registered as default PDF viewer.");
-            println!("Desktop file: {}", desktop_file.display());
         }
     }
 }
