@@ -1748,7 +1748,7 @@ impl eframe::App for PdfReaderApp {
                 let offset_y: f32 = page_sizes[..target].iter()
                     .map(|(_, h)| h * zoom + page_gap).sum();
                 self.scroll_offset.y = offset_y;
-                self.scroll_offset.x = 0.0;
+                // Keep x offset — don't reset horizontal position
             }
 
             // Clear page rects for this frame
@@ -1871,10 +1871,8 @@ impl eframe::App for PdfReaderApp {
 
                             if at_bottom && scroll_delta < -5.0 && self.viewport.current_page + 1 < page_count {
                                 self.viewport.next_page(page_count);
-                                // Start at top of next page
+                                // Start at top of next page, keep x position
                                 self.scroll_offset.y = 0.0;
-                                self.scroll_offset.x = 0.0;
-                                // Don't use scroll_to_page — set offset directly
                             } else if at_top && scroll_delta > 5.0 && self.viewport.current_page > 0 {
                                 self.viewport.prev_page();
                                 // Start at bottom of previous page
@@ -1950,6 +1948,33 @@ impl eframe::App for PdfReaderApp {
                     // Don't update scroll offset during active text selection
                     if !(cursor_mode == CursorMode::Select && self.selection.active) {
                         self.scroll_offset = output.state.offset;
+                    }
+
+                    // Detect scroll hitting edge → change page pair
+                    let (_, lph2) = if left_page < page_count { page_sizes[left_page] } else { (612.0, 792.0) };
+                    let (_, rph2) = if right_page < page_count { page_sizes[right_page] } else { (lph2, lph2) };
+                    let content_h = (lph2 * zoom).max(rph2 * zoom) + 8.0;
+                    let view_h = output.inner_rect.height();
+                    let max_scroll = (content_h - view_h).max(0.0);
+                    let at_bottom = max_scroll > 0.0 && self.scroll_offset.y >= max_scroll - 5.0;
+                    let at_top = self.scroll_offset.y <= 2.0;
+                    let scroll_delta = ctx.input(|i| i.raw_scroll_delta.y);
+
+                    // Page fits screen: always allow scroll to change pages
+                    let fits = max_scroll <= 5.0;
+
+                    if (at_bottom || fits) && scroll_delta < -5.0 && left_page + 2 < page_count {
+                        let new_page = left_page + 2;
+                        self.viewport.go_to_page(new_page, page_count);
+                        self.scroll_offset.y = 0.0;
+                    } else if (at_top || fits) && scroll_delta > 5.0 && left_page >= 2 {
+                        let new_page = left_page - 2;
+                        self.viewport.go_to_page(new_page, page_count);
+                        if !fits {
+                            let (_, prev_ph) = page_sizes[new_page];
+                            let prev_h = prev_ph * zoom + 8.0;
+                            self.scroll_offset.y = (prev_h - view_h).max(0.0);
+                        }
                     }
                 }
             }
