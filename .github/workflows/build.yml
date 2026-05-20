@@ -5,6 +5,12 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Opt the Node-20 actions (checkout, upload-artifact) into the Node 24
+# runtime before the 2026-06-02 forced cutover. Workflow-level so every
+# action moves at once.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-windows:
     runs-on: windows-latest
