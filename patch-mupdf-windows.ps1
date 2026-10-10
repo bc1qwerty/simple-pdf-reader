@@ -1,5 +1,5 @@
 # Patch mupdf 0.6.0 for Windows MSVC (max_align_t not defined)
-$cargoHome = "$env:USERPROFILE\.cargo"
+$cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { "$env:USERPROFILE\.cargo" }
 $nativeRs = Get-ChildItem -Path "$cargoHome\registry\src" -Recurse -Filter "native.rs" | Where-Object { $_.FullName -like "*mupdf-0.6.0*device*" } | Select-Object -First 1
 
 if ($nativeRs) {

@@ -25,15 +25,25 @@ jobs:
       - name: Install LLVM (for bindgen/mupdf)
         run: choco install llvm -y
 
+      # mupdf 0.6.0 은 MSVC 에 없는 max_align_t 를 쓴다(Cargo.toml 주석). 소스를 먼저
+      # 받아 리포의 패치 스크립트로 고친 뒤 빌드한다 — 안 하면 컴파일에서 죽는다.
+      - name: Fetch crates
+        run: cargo fetch --target x86_64-pc-windows-msvc
+
+      - name: Patch mupdf for MSVC
+        shell: pwsh
+        run: ./patch-mupdf-windows.ps1
+
       - name: Build Release
         env:
           LIBCLANG_PATH: "C:\\Program Files\\LLVM\\lib"
         run: cargo build --release --target x86_64-pc-windows-msvc
 
+      # 바이너리 이름은 Cargo.toml 의 [[bin]] name 이다(pdf-reader 가 아니다).
       - name: Prepare artifact
         run: |
           mkdir dist
-          copy target\x86_64-pc-windows-msvc\release\pdf-reader.exe dist\SimplePDFReader.exe
+          copy target\x86_64-pc-windows-msvc\release\SimplePDFReader.exe dist\SimplePDFReader.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
